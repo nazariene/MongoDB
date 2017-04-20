@@ -1,0 +1,2 @@
+use test
+db.zips.aggregate([{$match:{"state":{$in:["CA", "NY"]}, "pop":{$gt:25000}}}, {$group:{"_id":{"city":"$city", "state":"$state"}, "sumPop":{$sum:"$pop"}}},{$project:{"aaa":"aaa", "sumPop":1}} , {$group:{"_id":"$aaa", "pop":{$avg:"$sumPop"}}}])

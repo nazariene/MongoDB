@@ -1,0 +1,2 @@
+use test
+db.grades.aggregate([{$unwind:"$scores"},{$match:{"scores.type":{$in:["exam","homework"]}}}, {$group:{"_id":{"student":"$student_id", "class":"$class_id"}, "score":{$avg:"$scores.score"}}}, {$group:{"_id":"$_id.class", "avgScore":{$avg:"$score"}}}, {$sort:{"avgScore":-1}}]).pretty()
