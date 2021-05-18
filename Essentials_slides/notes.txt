@@ -1,0 +1,363 @@
+---
+Intro:
+1) Mongo is document-model database
+2) Expresses documents using JSON syntax, keeps data in BSON (serialize, binary objects with data types, lengths)
+3) Databases -> Collections -> Documents
+4) Should be used for:
+     - High access to complex objects (atomic partial updates, fast retrieval, secondary indices, aggregation capabilities)
+     - Store larger data structures together (large arrays, text fields, binary data)
+     - Rapid development
+     - Structures of varying shapes
+     - Distributed data
+     - Large data volumes
+
+
+---
+Storage Engines:
+1) MongoDB has pluggable storage engines. (WiredTiger, MMAP, In-Memory, Encrypted, 3rdParty, etc)
+  Default is WiredTiger. Originally used MMAP (before 3.2 release).
+
+2) WiredTiger:
+    - Stores BSON Documents in a BTree
+    - Documents are indexed by internal key
+    - Documents are stored in the leaf node (other nodes are internal pages)
+    - Indexes are also BTRees indexed by the index value
+    -  Journaling (WAL - Write-Ahead Log)
+       - Uses write-ahead log (journal) in combination with checkpoints to ensure durability. A write-ahead log stores modifications before they are applied
+       - Regardless of storage engine, always use journaling in production
+       - Journaling with checkpoint ensures there is no point in time where data might be lost if there was a failure of the mongod process
+        E.g. you have customers table. You insert a customer. It's in journal, but not in data yet. If you now query to customer - data will return empty set. That info will be expanded by stuff from journal and returned (i.e. you receive your customer)
+          Journal will be synced with data each 60 seconds, but if it's too big - it will take time.
+        !!!If performance is lousy - check the journal! Maybe it's huge.
+    - Checkpoints - happen every minute to ensure there is always a fully consistent set of data on disk
+      Recovery involves replaying the Journal for the last minute on the latest checkpoint (Recovery = Last Checkpoint + Apply Journal)
+    - Database cache - has a block of cache (default is half of (RAM - 1GB) or 256Mb which is largest)
+        A block in the cache can retain multiple versions of a document while they are needed
+        Unused blocks are flushed from the cache when no longer Used
+        If the cache fills and needs to retain information longer - data is written to a cache backing file called LAS file
+        Infrequently used data is evicted when space is needed
+        Blocks in the cache can be from collections or indices
+    - Compression is enabled by default
+    - Document level concurrency. Reads are not blocked by a write.
+
+3) Encrypted - built on top of WiredTiger, keeps stuff encrypted
+4) In-Memory - transient, keeps data in RAM. Reboot - and all is gone
+5) MongoDB Uses "dbpath" directory to hold database files
+6) Locking is logically Pessimistic:
+    - Single document operations are atomic
+    - Write operation takes exclusive write lock: writes never block reads (reads can always happen). Find->Lock->Check->Change->Unlock
+    - Locking is pessimistic - your update will queue
+7) Locking is Technically Optimistic:
+    - Mongo has to update the document and possible indices (this must be atomic, it uses an internal transaction, supports multi-version concurrency)
+    - This fails when committing if there is a contention
+    - Mongo automatically retries until success - make it pessimistic
+
+---
+Atlas:
+
+1) Fully-managed SaaS offering
+   Can be deployed in AWS, GCP and Azure (you select where you host servers)
+
+2) Provides hierarchy based on orgs and projects:
+     - Orgs and projects allow you to isolate different environments
+     - Org can have multiple projects
+     - Each project can host multiple clusters
+
+3) Atlas automatically collects and displays metrics on cluster activity. You can create alerts to monitor cluster status
+
+4) Data Explorer feature allows you to view and modify your data in Atlas UI
+
+5) Integrates with Charts - MongoDB data visualization tool
+
+6) You can migrate existing cluster via a Live Migrate Service
+    Deploy a Data Lake to query your archived data in S3 buckets
+    Triggers allow you to execute server-side logic in response to database events
+
+7) Deploy Stitch applications - lets you read and write the data you've stored in Atlas.
+    Serverless solution. Basically a small function that executes stuff on database. Similar to AWS Lambda
+
+8) Client connection:
+   - Uses TLS/SSL by default
+   - Uses IP Whitelist. By default even if user has permissions - it wont be allowed to connect to DB.
+   - VPC Peering
+
+9) Authentication:
+  - 2FA support
+  - Database user authentication required
+  - Integration with LDAP
+
+10) Authorization:
+  - Optional Auditing to allow to track system activity for deployments with multiple users
+
+11) Encryption at rest:
+  - Use of AWS KMS, Azure Key Vault and GCP to encrypt storage engines and backups
+
+
+---
+Storage and Retrieval
+
+1) insertOne() - adds a document to a collection
+   _id will be added if not supplied and must be unique if supplied
+   Object size < 16mb
+   db.movies.insertOne({"name" : "Jaws"}) - insert one document to collection
+
+2) insertMany() - accepts an array of documents to insert.
+   db.movies.insertMany({"name":"Jaws"}, {"name":"Avatar"}) - insert many elements to collection in bulk.
+    - Single network call - reduce timing overall (avoids network roundtrip for each entry)
+    - Returns an object with information about each insert
+    - Limit of 48MB or 100000 documents data in a single call to server (larger batch is broken up behind the scenes by driver)
+    - Can be ordered or unordered. Unordered = faster (parallel). Ordered - slower
+         Controlled by "ordered" flag in request. Default = true
+         If ordered and error - it must stop on first error.
+
+3) findOne()/find() - read documents
+     - Takes query, fields, limit, skip, batchSize, options
+     - Query:
+       - Order of query fields do not matter (cause of javascript specifics)
+       - Query is treated like "find anything similar"
+       - Specified query fields are joined by "AND" operation
+     - Fields:
+       - Specifies "projection" of a document that is returned (i.e. only a subset of fields are returned)
+       - e.g. {"title":1, "_id":0} - return title, but skip _id
+       - Only inclusions OR exclusions in the fields! Except for _id (can't do "title":0,"genre":1)
+       - _id is returned by default
+
+    findOne() - returns single document
+        db.getCollection('movies').findOne()
+
+    find() - returns a cursor. Query is not actually run until we fetch some results from it.
+        db.movies.find({"year" : {$lt : 1990}})
+      - We can keep fetching documents form a cursor to get all matches
+      - If we type "it" - it will get next entries from cursor
+      - Can assign a cursor to a variable and work with it.
+            var c = db.movies.find()
+                and then:
+            c.hasNext()
+            c.next()
+      - Cursor has Skip and Limit and Count modifiers - can skip entries, limit their amount and count them.
+      - Cursor work in batches. Default size in shell is 101 documents during initial call with limit of 1Mb or 1 Document
+         If we fetch more than 100 docs from cursor - it fetches in 4Mb chunks
+
+4) Documents can contain other documents. To query this use dot notation - "address.city"
+
+5) Quering by range - can use $in, $eq, $gt, $lt and other operation for query
+  db.inspections.count({"result": {$in : ["Pass", "Fail"]}}) - count all document where "result" is either "Pass" or "Fail"
+  db.stories.find({}).sort({"comments": -1}).limit(1).pretty() - find story with max comments
+  db.stories.find({$or: [{"topic.name" : "Television"}, {"media" : "videos"}]}).skip(5).limit(10) - find stories where either topic name is Television OR media is videos
+
+6) Quering values in array
+    - When field you are matching is an array, you will match if the query matches ANY members
+      find("hobbies":"garden")
+    - OR if it exactly matches the whole array, including order!
+      find("hobbies":["garden", "swimming"])
+    - $all - takes a list of values and matches where the array contains ALL of those values. There may be additional values in array, order doesn't matter
+      find({ hobbies : { $all : ["robots","cars"] }})
+    - $size - matches if the array length is exactly the size specified. Cannot use with $gt and $lt
+      find({ hobbies : { $size : 3}})
+    - $elemMatch - has an Element that would match this supplied query
+      find({ age : {$elemMatch: { $gt : 18 , $lt: 30 } }})
+
+7) Can sort output by using sort() on cursor
+8) Expressive queries ($expr):
+    - Allows to compare values inside a document to each other
+    - Or to calculate something like "find where width*height > 50"
+    - Can match ANY computable function in the data
+    - Only exact matches, cannot  use them for range or other queries
+    db.movies.find({ $expr: { $gt: [ "$tomatoes.viewer.rating" ,"$imdb.rating" ] } })
+
+9) updateOne()/updateMany - update documents
+   updateOne will change only the first document
+   updateMany will change ALL matching documents. Unlike insertMany its actually a single server request!!!
+     is NOT atomic. If server fails or if it hits an error condition - only some records are changed
+
+   db.movies.updateOne({"title": "Jaws"}, { $set: {"imdb_rating" : 10}}) - find something and patch it
+   db.movies.updateOne({"title": "Jaws"}, { $inc: {"imdb_rating" : 1}}) - find something and increment its rating by 1
+   db.movies.updateOne({"title": "Jaws"}, { $inc: {"imdb_rating" : 1}, $set: { "country" : "Russia"}}) - atomic! Locks the document
+
+   If document is found by search, but not updated - it's not appearing in the transactional log
+
+   Can use operators such as $set, $unset, $push, $pull, $pop, $inc, $setOnInsert
+
+   db.grades.updateMany({"scores.type": "homework"}, {$inc : "scores.$[anyFilter].score":10}, {"arrayFilters": [ {"anyFilter.score": {$gte: 40, $lt: 60}}]})
+     Update all documents where type = homework. increment score by 10 IF its in range 40 to 60 currently.
+   db.inspections.updateMany({"result":"Completed"},{$set: {"result":"No Violations Issued"}})
+     Update all inspections where "result" is "Completed" - set "result" to "No Violations Issued"
+   db.inspections.updateMany({"address.city":"ROSEDALE", "result":"Fail"},{$inc: {"fine_value": 150}})
+     Update all inspections done in the city of “ROSEDALE”, for failed inspections, raise the “fine” value by 150.
+
+10) deleteOne/deleteMany - delete documents
+
+   Work the same way as updateOne/updateMany
+   No commit safety net like in SQL
+
+
+11) Updating, locking and concurrency
+    - Mongo performs individual updates on records serially (one update does not see another partially completed). If 2 processes attempt to update the same document at the same time they are serialized
+    - Conditions in the query must always match for the update to take place
+    - Reads are not serialized
+    - Multiple writes can take place on one collections - this only affects individual elements
+
+12) replaceOne() - will keep _id field, others are replaced. Will overwrite any values not in the submitted document
+
+13) Updating arrays:
+    - To update specific element of the array - db.a.updateOne({_id:"Tom"},{ $inc : { "hrs.3" : 1 }})
+    - Update matched elements - db.a.updateOne({_id:"Tom",hrs:{$lt:1}},{ $inc : { "hrs.$" : 2 }})
+    - Update ALL elements - db.a.updateOne({_id:"Tom"},{$inc : { "hrs.$[]" : 2 }})
+    - Update all matched elements using arrayFilters:  db.a.updateOne({_id:"Tom",hrs:{$lt:1}},
+                                                        {$inc : { "hrs.$[iszero]" : 2 }},
+                                                        {"arrayFilters": [ {"iszero":{"$lt":1}}]})
+
+14) Expressive updates:
+     Updates can be performed using aggregation pipelines expressions
+     db.shapes.updateMany({shapename: {$in : ["rectangle","square"]}}, [ { $set: { area: { $multiply:[ "$width","$height" ] } } } ])
+
+15) Upsert - if a document isn't found to update then it's created
+     - Inserts a new document if none are found to update
+     - flag "upsert:true" is available in most operations
+     - Values in both query and update are used to create new record
+     - NOT atomic between find() and insert() - it's possible for two simultaneously runs to both do an insert (unique constraints might help)
+
+16) findOneAndUpdate() - returns the document as part of the find and update
+     - Prevents non atomic issues with doing update and then find
+     - By default it returns the "before" version of the document (not "after" the update)
+
+     findAndModify - same thing
+---
+Bulk Writes (TODO)
+
+Affect a single collection ONLY!
+Used to update, insert, delete documents in a single operation.
+Can be ordered and unordered. Unordered == parallel
+ORdered - If an error occurs during processing one of the writed operations - mongo will stop processing the rest and return
+Unordered - if error occurs it will return a list of write errors when its done
+
+bulkWrite() - supports insertOne, updateOne, updateMany, replaceOne, deleteOne, deleteMany
+
+Retryable writes - if write failed, then it can be retried (1 time by default).
+
+---
+Transactions
+Operation on a single document is atomic, i.e. provide all-or-nothing proposition
+
+Mongo supports multi-document transactions for situations that require atomicity of reads and writes to multiple documents (in a single or multiple collections)
+
+Snapshot isolation and write conflicts:
+  when modifying a document, a transaction locks the document from additional changes until transactions completes
+  If a transaction is unable to obtain a lock on a document it is attempting to modify, it will immediately abort after 5ms with a write conflict
+  Reads do not require the same locks that document modifications do
+
+  Internally it keeps a copy of the original document (a snapshot).
+
+---
+Aggregations
+
+1) Aggregations allow to compute new data: calculated fields, summarized and grouped values, reshape documents
+2) Aggregation is a pipeline - similar to linux pipes or java streams
+    - Each transformation is a single step
+    - Linear process
+3) Can use variables like $$now or $$root. 
+4) See https://docs.mongodb.com/manual/meta/aggregation-quick-reference/
+
+5) Example:
+    db.listingsAndReviews.aggregate([
+      {$match:{"address.country":"Canada"}},
+      {$sort: {"host.host_total_listings_count":-1 }},
+      {$limit:1}
+      {$project:{"_id":0, "host.host_total_listings_count":1, "host.host_name":1}}])
+
+6) Pipeline will merge stages and reorder as needed
+   Will work out the required early projections. DO NOT $project to optimize!
+   $unwind -> $group is an anti-pattern. Use projection accumulators
+
+7) Stages can be streaming or blocking - sort, group, bucket, facet block until next step until complete. Blocking stage removes parallelism.
+8) On sharded clusters aggregations run in parallel where possible
+
+
+---
+Replication
+
+1) Components of a replica set:
+  - Primary:
+     - elected by consensus
+     - handles ALL write operations and most Reads
+  - Secondary:
+     - Handle only read operations
+     - Help to elect primary
+     - may not have latest data
+  - Non-voting members:
+     - hold additional copies for analysis or similar
+  - Arbiter:
+     - Does not have a copy of data
+     - Participates in election as a tie-breaker
+     - Can be HA OR Guarantee Durability (not both)
+     - Advised against in production systems
+
+   You do not provide what will be primary - you provide an odd number of voting members
+
+2) Secondary nodes can be prio 0, hidden and delayed.
+     - Prio 0 - CANNOT become new primary
+     - Hidden - secondaries that a client CANNOT access by connecting to replica set. Need to connect directly. Must be prio 0, but can vote
+     - Delayed - delayed playing of replication operations
+
+3) Driver keeps track of topology, knows where and how to route requests.
+
+4) Replication process:
+  - Write goes to primary
+  - Primary applies the change at time T and logs in Oplog
+  - Secondaries are observing this Oplog and read changes up to time T
+  - Secondaries apply changes up to time T to themselves - and log to their own Oplog
+  - Secondaries request info after time T
+  - Primary KNOWS the latest seen T for secondaries!
+
+5) Initial sync:
+  New members of a replica set need a full copy of data (as do any that have been down too long)
+  Can't be taken from Oplog due to size limit - so data is copied from a node
+
+6) Elections:
+  You need a majority of all eligible voters
+  Each node will vote for or against a proposed candidate
+  RAFT protocol is used
+
+  Secondary decided that it has not heard from Primary for a long time
+  Secondary proposes an election - with itself as primary
+  Heartbeats are sent each 2 seconds to all members
+
+---
+Oplog
+1) Read-only capped collection of BSON documents
+2) Keeps ONE entry per change
+3) Entries are idempotent
+4) Guaranteed preservation of order
+5) Basically a queue - once filled, front elements are removed allowing to insert more in the back
+
+---
+Write/Read concerns
+1) Mongo lets you specify what "Ok, committed" means.
+  - Received by the primary but not examined - w:0
+  - Received and written by the primary - durable on primaries disk. w:1, j:1
+  - Received and written by majority. w: "majority"
+
+2) w is the number of servers, j is whether to wait for the next disk flush (default with majority)
+3) You can specify this on any write, connection or an object you use to write
+
+4) Mongo will wait until it achieves the level you requested or times out.
+     In case if a timeout some work might be done - you have to confirm the state.
+5) Proposition is to use majority
+
+6) Read concerns
+  When reading you can specify how reads are impacted by what's durable
+  - Read local - what's latest on primary
+  - Read Majority - what's latest that is 100% durable (enabled by majority commit point)
+  - Read Snapshot - read what was there when our query starts.
+       This hides any changes whilst the query is going
+  - Read Linearizable - wait until a majority catch up to my query time
+
+---
+Read preferences
+You can specify where to read from:
+  - Primary Only
+  - Primary Preferred
+  - Secondary Only
+  - Secondary unless no secondary exists
+  - Nearest (geographical)
+  - Specific set of servers
